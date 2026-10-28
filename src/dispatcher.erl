@@ -17,8 +17,7 @@
 dispatch(Method, Path, Headers, Body, From) ->
     case backend_manager:get_next_backend() of
         {ok, {BackendId, BackendType, BaseUrl}} ->
-            FullUrl = BaseUrl ++ Path,
-            Result = execute_with_retry(Method, FullUrl, Headers, Body, BackendId, ?MAX_RETRIES),
+            Result = execute_with_retry(Method, BaseUrl, Path, Headers, Body, BackendId, ?MAX_RETRIES),
             case Result of
                 {ok, StatusCode, RespHeaders, RespBody} ->
                     reply(From, {ok, StatusCode, RespHeaders, RespBody, BackendId, BackendType}),
@@ -33,8 +32,9 @@ dispatch(Method, Path, Headers, Body, From) ->
     end.
 
 %% Dispatch with retries across backends if a backend is dead
-execute_with_retry(Method, Url, Headers, Body, BackendId, RetriesLeft) ->
-    case execute_request(Method, Url, Headers, Body, BackendId, ?HTTP_TIMEOUT_MS) of
+execute_with_retry(Method, BaseUrl, Path, Headers, Body, BackendId, RetriesLeft) ->
+    FullUrl = BaseUrl ++ Path,
+    case execute_request(Method, FullUrl, Headers, Body, BackendId, ?HTTP_TIMEOUT_MS) of
         {ok, StatusCode, RespHeaders, RespBody} when StatusCode < 500 ->
             backend_manager:report_status(BackendId, success),
             {ok, StatusCode, RespHeaders, RespBody};
@@ -43,8 +43,7 @@ execute_with_retry(Method, Url, Headers, Body, BackendId, RetriesLeft) ->
             %% Try another backend
             case backend_manager:get_next_backend() of
                 {ok, {NextId, _Type, NextBaseUrl}} ->
-                    {_, Path} = split_url_path(Url),
-                    execute_with_retry(Method, NextBaseUrl ++ Path, Headers, Body, NextId, RetriesLeft - 1);
+                    execute_with_retry(Method, NextBaseUrl, Path, Headers, Body, NextId, RetriesLeft - 1);
                 _ ->
                     {ok, StatusCode, RespHeaders, RespBody}
             end;
@@ -55,8 +54,7 @@ execute_with_retry(Method, Url, Headers, Body, BackendId, RetriesLeft) ->
             backend_manager:report_status(BackendId, failure),
             case backend_manager:get_next_backend() of
                 {ok, {NextId, _Type, NextBaseUrl}} ->
-                    {_, Path} = split_url_path(Url),
-                    execute_with_retry(Method, NextBaseUrl ++ Path, Headers, Body, NextId, RetriesLeft - 1);
+                    execute_with_retry(Method, NextBaseUrl, Path, Headers, Body, NextId, RetriesLeft - 1);
                 _ ->
                     {error, Reason}
             end;
@@ -69,7 +67,7 @@ execute_request(Method, FullUrl, Headers, Body, _BackendId, Timeout) ->
     CleanHeaders = filter_headers(Headers),
     HttpOpt = [{timeout, Timeout}, {connect_timeout, 5000}],
     ReqOpt = [{body_format, binary}],
-    
+
     ReqResult = case Method of
         get ->
             httpc:request(get, {FullUrl, CleanHeaders}, HttpOpt, ReqOpt);
@@ -118,14 +116,3 @@ filter_headers(Headers) ->
         Lower = string:to_lower(Key),
         Lower =/= "host" andalso Lower =/= "connection" andalso Lower =/= "content-length"
     end, Headers).
-
-split_url_path(Url) ->
-    case uri_string:parse(Url) of
-        #{path := Path, query := Query} ->
-            {Url, Path ++ "?" ++ Query};
-        #{path := Path} ->
-            {Url, Path};
-        _ ->
-            {Url, "/"}
-    end.
-

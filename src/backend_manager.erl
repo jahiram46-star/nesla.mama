@@ -61,7 +61,7 @@ report_status(BackendId, Status) ->
 list_backends() ->
     gen_server:call(?MODULE, list_backends).
 
--spec add_backend(any(), atom(), string()) -> ok.
+-spec add_backend(any(), atom(), string() | binary()) -> ok.
 add_backend(Id, Type, Url) ->
     gen_server:call(?MODULE, {add_backend, Id, Type, Url}).
 
@@ -78,7 +78,7 @@ init(InitialBackends) ->
         #backend{
             id = Id,
             type = Type,
-            url = strip_trailing_slash(Url),
+            url = strip_trailing_slash(to_list(Url)),
             status = up,
             fail_count = 0
         }
@@ -110,7 +110,7 @@ handle_call(list_backends, _From, #state{backends = Backends} = State) ->
         #{
             id => B#backend.id,
             type => B#backend.type,
-            url => list_to_binary(B#backend.url),
+            url => to_binary(B#backend.url),
             status => B#backend.status,
             fail_count => B#backend.fail_count,
             total_requests => B#backend.total_requests,
@@ -121,7 +121,7 @@ handle_call(list_backends, _From, #state{backends = Backends} = State) ->
     {reply, {ok, Result}, State};
 
 handle_call({add_backend, Id, Type, Url}, _From, #state{backends = Backends} = State) ->
-    CleanUrl = strip_trailing_slash(Url),
+    CleanUrl = strip_trailing_slash(to_list(Url)),
     NewBackend = #backend{id = Id, type = Type, url = CleanUrl, status = up},
     Filtered = [B || B <- Backends, B#backend.id =/= Id],
     {reply, ok, State#state{backends = Filtered ++ [NewBackend]}};
@@ -189,3 +189,8 @@ strip_trailing_slash(Url) ->
         _ -> Url
     end.
 
+to_list(Str) when is_list(Str) -> Str;
+to_list(Bin) when is_binary(Bin) -> binary_to_list(Bin).
+
+to_binary(Bin) when is_binary(Bin) -> Bin;
+to_binary(Str) when is_list(Str) -> list_to_binary(Str).

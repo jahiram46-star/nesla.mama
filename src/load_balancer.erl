@@ -39,15 +39,17 @@ start(ListenPort, Backends) ->
             {ok, ManagerPid};
         {error, Reason} ->
             io:format("[Load Balancer] Failed to bind on port ~p: ~p~n", [ListenPort, Reason]),
+            unregister(lb_manager),
+            exit(ManagerPid, kill),
             {error, Reason}
     end.
 
 %% @doc Stop the load balancer manager
 stop() ->
     case whereis(lb_manager) of
-        undefined -> 
+        undefined ->
             io:format("[Load Balancer] Already stopped.~n");
-        Pid -> 
+        Pid ->
             exit(Pid, normal),
             io:format("[Load Balancer] Manager process stopped.~n")
     end.
@@ -59,11 +61,18 @@ stop() ->
 manager_loop(Backends, Index) ->
     receive
         {get_backend, From} ->
-            NumBackends = length(Backends),
-            SelectedBackend = lists:nth(Index, Backends),
-            NextIndex = (Index rem NumBackends) + 1,
-            From ! {backend, SelectedBackend},
-            manager_loop(Backends, NextIndex);
+            case Backends of
+                [] ->
+                    From ! {backend, {error, no_backends}},
+                    manager_loop(Backends, Index);
+                _ ->
+                    NumBackends = length(Backends),
+                    SafeIndex = ((Index - 1) rem NumBackends) + 1,
+                    SelectedBackend = lists:nth(SafeIndex, Backends),
+                    NextIndex = (Index rem NumBackends) + 1,
+                    From ! {backend, SelectedBackend},
+                    manager_loop(Backends, NextIndex)
+            end;
         stop ->
             ok
     end.
@@ -71,6 +80,7 @@ manager_loop(Backends, Index) ->
 get_next_backend() ->
     lb_manager ! {get_backend, self()},
     receive
+        {backend, {error, Reason}} -> {error, Reason};
         {backend, Backend} -> {ok, Backend}
     after 2000 ->
         {error, timeout}
@@ -90,7 +100,7 @@ accept_loop(ListenSocket) ->
                 {error, _Reason} ->
                     gen_tcp:close(ClientSocket)
             end,
-            accept_loop(ListenSocket);
+            acceptor_loop(ListenSocket);
         {error, closed} ->
             io:format("[Acceptor] Listen socket closed.~n");
         {error, Reason} ->
@@ -124,8 +134,8 @@ connect_to_backend_and_proxy(ClientSocket, RetriesLeft) when RetriesLeft > 0 ->
                     connect_to_backend_and_proxy(ClientSocket, RetriesLeft - 1)
             end;
         {error, Reason} ->
-            io:format("[Proxy] Backend selection error: ~p~n", [Reason]),
-            gen_tcp:close(ClientSocket)
+            io:format("[Proxy] Backend selection error: ~p. Trying next...~n", [Reason]),
+            connect_to_backend_and_proxy(ClientSocket, RetriesLeft - 1)
     end;
 connect_to_backend_and_proxy(ClientSocket, 0) ->
     io:format("[Proxy] All backends failed. Closing client connection.~n"),
@@ -141,7 +151,7 @@ proxy_loop(ClientSocket, BackendSocket) ->
         {tcp, ClientSocket, Data} ->
             case gen_tcp:send(BackendSocket, Data) of
                 ok -> proxy_loop(ClientSocket, BackendSocket);
-                {error, _} -> 
+                {error, _} ->
                     gen_tcp:close(ClientSocket),
                     gen_tcp:close(BackendSocket)
             end;
@@ -149,7 +159,7 @@ proxy_loop(ClientSocket, BackendSocket) ->
         {tcp, BackendSocket, Data} ->
             case gen_tcp:send(ClientSocket, Data) of
                 ok -> proxy_loop(ClientSocket, BackendSocket);
-                {error, _} -> 
+                {error, _} ->
                     gen_tcp:close(ClientSocket),
                     gen_tcp:close(BackendSocket)
             end;
