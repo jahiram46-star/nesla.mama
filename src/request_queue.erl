@@ -59,7 +59,11 @@ enqueue_sync(Method, Path, Headers, Body) ->
     enqueue_sync(Method, Path, Headers, Body, 60000).
 
 enqueue_sync(Method, Path, Headers, Body, Timeout) ->
-    gen_server:call(?MODULE, {enqueue_sync, Method, Path, Headers, Body}, Timeout).
+    try gen_server:call(?MODULE, {enqueue_sync, Method, Path, Headers, Body}, Timeout)
+    catch
+        exit:{timeout, _Reason} ->
+            {error, timeout}
+    end.
 
 %% Asynchronous: Client gets immediate ticket ID and queue position
 enqueue_async(Method, Path, Headers, Body) ->

@@ -97,14 +97,31 @@ acceptor_loop(ListenSocket, Parent) ->
 handle_client(Socket) ->
     inet:setopts(Socket, [{active, false}, {packet, http_bin}]),
     case gen_tcp:recv(Socket, 0, 15000) of
-        {ok, {http_request, Method, {abs_path, RawPathBin}, _Version}} ->
-            Path = binary_to_list(RawPathBin),
+        {ok, {http_request, Method, Target, _Version}} ->
+            Path = parse_target(Target),
             Headers = recv_headers(Socket, []),
-            Body = recv_body(Socket, Headers),
-            process_http_request(Socket, normalize_method(Method), Path, Headers, Body);
+            case recv_body(Socket, Headers) of
+                {ok, Body} ->
+                    process_http_request(Socket, normalize_method(Method), Path, Headers, Body);
+                {error, invalid_content_length} ->
+                    send_error_response(Socket, 400, <<"Invalid Content-Length">>)
+            end;
         _ ->
             gen_tcp:close(Socket)
     end.
+
+parse_target({abs_path, RawPathBin}) ->
+    binary_to_list(RawPathBin);
+parse_target({absoluteURI, _Scheme, _Host, _Port, RawPathBin}) ->
+    binary_to_list(RawPathBin);
+parse_target('*') ->
+    "*";
+parse_target(Other) when is_binary(Other) ->
+    binary_to_list(Other);
+parse_target(Other) when is_list(Other) ->
+    Other;
+parse_target(_) ->
+    "/".
 
 recv_headers(Socket, Acc) ->
     case gen_tcp:recv(Socket, 0, 10000) of
@@ -119,14 +136,24 @@ recv_headers(Socket, Acc) ->
     end.
 
 recv_body(Socket, Headers) ->
-    case lists:keyfind("Content-Length", 1, Headers) of
+    LenVal = case lists:keyfind("Content-Length", 1, Headers) of
         false ->
             case lists:keyfind("content-length", 1, Headers) of
-                false -> <<>>;
-                {_, LenStr} -> read_body_bytes(Socket, list_to_integer(LenStr))
+                false -> undefined;
+                {_, Str1} -> Str1
             end;
-        {_, LenStr} ->
-            read_body_bytes(Socket, list_to_integer(LenStr))
+        {_, Str0} -> Str0
+    end,
+    case LenVal of
+        undefined ->
+            {ok, <<>>};
+        Str ->
+            case catch list_to_integer(Str) of
+                Len when is_integer(Len) andalso Len >= 0 ->
+                    {ok, read_body_bytes(Socket, Len)};
+                _ ->
+                    {error, invalid_content_length}
+            end
     end.
 
 read_body_bytes(_Socket, 0) ->
@@ -180,8 +207,8 @@ process_http_request(Socket, Method, Path, Headers, Body) ->
                 {ok, StatusCode, RespHeaders, RespBody, BackendId, BackendType} ->
                     ForwardHeaders = [
                         {"Access-Control-Allow-Origin", "*"},
-                        {"X-Served-By-Backend", atom_to_list(BackendId)},
-                        {"X-Backend-Type", atom_to_list(BackendType)}
+                        {"X-Served-By-Backend", val_to_string(BackendId)},
+                        {"X-Backend-Type", val_to_string(BackendType)}
                         | filter_outgoing_headers(RespHeaders)
                     ],
                     send_response(Socket, StatusCode, ForwardHeaders, RespBody);
@@ -236,7 +263,7 @@ send_response(Socket, StatusCode, Headers, Body) ->
     StatusLine = io_lib:format("HTTP/1.1 ~p ~s\r\n", [StatusCode, StatusText]),
     BodyBin = if is_binary(Body) -> Body; is_list(Body) -> list_to_binary(Body); true -> <<>> end,
     LenHeader = io_lib:format("Content-Length: ~p\r\n", [byte_size(BodyBin)]),
-    HdrLines = [io_lib:format("~s: ~s\r\n", [K, V]) || {K, V} <- Headers],
+    HdrLines = [io_lib:format("~s: ~s\r\n", [val_to_string(K), val_to_string(V)]) || {K, V} <- Headers],
     FullPacket = [StatusLine, HdrLines, LenHeader, "\r\n", BodyBin],
     gen_tcp:send(Socket, FullPacket),
     gen_tcp:close(Socket).
@@ -244,6 +271,12 @@ send_response(Socket, StatusCode, Headers, Body) ->
 %%====================================================================
 %% Utilities
 %%====================================================================
+
+val_to_string(Atom) when is_atom(Atom) -> atom_to_list(Atom);
+val_to_string(Bin) when is_binary(Bin) -> binary_to_list(Bin);
+val_to_string(List) when is_list(List) -> List;
+val_to_string(Int) when is_integer(Int) -> integer_to_list(Int);
+val_to_string(Other) -> io_lib:format("~p", [Other]).
 
 normalize_method('GET') -> get;
 normalize_method('POST') -> post;
@@ -338,4 +371,3 @@ escape_str(Str) ->
         ($\t) -> "\\t";
         (C) -> [C]
     end, Str).
-
