@@ -1,0 +1,33 @@
+{application, load_balancer, [
+    {description, "Erlang Multi-Backend (Xano & Cloud) Load Balancer with Rate Pacing"},
+    {vsn, "1.0.0"},
+    {registered, [backend_manager, request_queue, http_gateway, lb_sup]},
+    {mod, {lb_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        inets,
+        ssl
+    ]},
+    {env, [
+        {listen_port, 8080},
+        {rate_per_minute, 10},
+        {backends, [
+            {xano_prod_1, xano, "https://x8ki-letl-twmt.xano.io/api:v1"},
+            {xano_prod_2, xano, "https://x8ki-letl-twmt.xano.io/api:v2"},
+            {cloud_aws, cloud, "https://httpbin.org"},
+            {cloud_gcp, cloud, "https://jsonplaceholder.typicode.com"}
+        ]}
+    ]},
+    {modules, [
+        backend_manager,
+        dispatcher,
+        request_queue,
+        http_gateway,
+        lb_sup,
+        lb_app
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.
+
