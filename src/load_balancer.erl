@@ -100,7 +100,7 @@ accept_loop(ListenSocket) ->
                 {error, _Reason} ->
                     gen_tcp:close(ClientSocket)
             end,
-            acceptor_loop(ListenSocket);
+            accept_loop(ListenSocket);
         {error, closed} ->
             io:format("[Acceptor] Listen socket closed.~n");
         {error, Reason} ->
